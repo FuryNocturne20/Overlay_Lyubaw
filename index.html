@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Overlay Twitch – Follow Progress</title>
+  <style>
+    body { margin:0; overflow:hidden; background:transparent; }
+    #login {
+      position:absolute; top:50%; left:50%;
+      transform:translate(-50%,-50%);
+      font-family:sans-serif;
+    }
+    #progress-container {
+      position:absolute; top:50%; left:50%;
+      transform:translate(-50%,-50%);
+      width:250px;
+      display:none;
+      flex-direction:column;
+      align-items:center;
+      font-family:"Segoe UI",sans-serif;
+    }
+    #progress-ring {
+      width:200px; height:auto;
+    }
+    #progress-ring circle {
+      stroke-linecap:round;
+      transition: stroke-dashoffset 0.5s ease;
+      filter:
+        drop-shadow(0 0 2px rgba(231,76,60,0.6))
+        drop-shadow(0 0 4px rgba(231,76,60,0.4));
+    }
+    .ring-bg {
+      stroke:black; stroke-width:12; fill:none;
+    }
+    .ring-progress {
+      stroke:url(#progressGradient); stroke-width:12; fill:none;
+      transform:rotate(-90deg);
+      transform-origin:50% 50%;
+    }
+    #progress-percentage {
+      position:absolute; top:50%; left:50%;
+      transform:translate(-50%,-50%);
+      font:1000 45px "Segoe UI", sans-serif;
+      color:#ff1900;
+      pointer-events:none;
+    }
+    #follow-count {
+      margin-top:12px;
+      font:1000 35px "Segoe UI", sans-serif;
+      color:#ff1900;
+      text-shadow:1px 1px 2px rgba(0,0,0,0.3);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 1) Bouton de login -->
+  <div id="login">
+    <button id="btnLogin">Se connecter à Twitch</button>
+  </div>
+
+  <!-- 2) Anneau de progression -->
+  <div id="progress-container">
+    <svg id="progress-ring" viewBox="0 0 120 120">
+      <defs>
+        <linearGradient id="progressGradient"
+                        gradientUnits="objectBoundingBox"
+                        gradientTransform="rotate(-90 0.5 0.5)">
+          <stop offset="0%" stop-color="orange"/>
+          <stop offset="100%" stop-color="red"/>
+        </linearGradient>
+      </defs>
+      <circle class="ring-bg"   cx="60" cy="60" r="54"/>
+      <circle class="ring-progress" cx="60" cy="60" r="54"/>
+    </svg>
+    <div id="progress-percentage">0%</div>
+    <div id="follow-count">0 follows</div>
+  </div>
+
+  <script>
+    // === CONFIG & OAuth ===
+    const CLIENT_ID    = 'TON_CLIENT_ID';  // ← remplace par ton Client ID
+    const REDIRECT_URI = location.origin + location.pathname;
+    const SCOPES       = 'user:read:email'; // pas de scope follow count nécessaire
+
+    // 1) Gérer le fragment #access_token
+    if (location.hash.includes('access_token')) {
+      const params = new URLSearchParams(location.hash.slice(1));
+      localStorage.setItem('twitch_token', params.get('access_token'));
+      history.replaceState(null,'',REDIRECT_URI);
+    }
+
+    // 2) Affichage du login ou de l’overlay
+    const btnLogin   = document.getElementById('btnLogin');
+    const divLogin   = document.getElementById('login');
+    const divOverlay = document.getElementById('progress-container');
+
+    function showLogin() {
+      divLogin.style.display   = 'block';
+      divOverlay.style.display = 'none';
+      btnLogin.onclick = () => {
+        const url = new URL('https://id.twitch.tv/oauth2/authorize');
+        url.search = new URLSearchParams({
+          client_id: CLIENT_ID,
+          redirect_uri: REDIRECT_URI,
+          response_type: 'token',
+          scope: SCOPES
+        });
+        location = url.toString();
+      };
+    }
+
+    function showOverlay() {
+      divLogin.style.display   = 'none';
+      divOverlay.style.display = 'flex';
+    }
+
+    // === LOGIQUE DU RING ===
+    const MILESTONES = [0, 10, 25, 50, 100, 250, 500];
+    let followCount = 0, phaseIndex = 0, pausing = false;
+    const ring = document.querySelector('.ring-progress');
+    const pctEl = document.getElementById('progress-percentage');
+    const countEl = document.getElementById('follow-count');
+    const RADIUS = 54;
+    const CIRC   = 2 * Math.PI * RADIUS;
+    ring.style.strokeDasharray  = CIRC;
+    ring.style.strokeDashoffset = CIRC;
+
+    function updateProgress() {
+      const target = MILESTONES[phaseIndex];
+      const lower  = phaseIndex>0 ? MILESTONES[phaseIndex-1] : 0;
+      const rawPct = (followCount - lower) / (target - lower);
+      const pct = Math.min(Math.max(rawPct,0),1);
+      ring.style.strokeDashoffset = CIRC * (1 - pct);
+      pctEl.textContent   = `${Math.floor(rawPct*100)}%`;
+      countEl.textContent = `${followCount.toLocaleString()} / ${target.toLocaleString()} follows`;
+
+      if (followCount >= target
+          && phaseIndex < MILESTONES.length-1
+          && !pausing) {
+        pausing = true;
+        setTimeout(()=>{
+          phaseIndex++;
+          pausing = false;
+          updateProgress();
+        }, 3000);
+      }
+    }
+
+    // === FETCH DES DONNÉES TWITCH ===
+    async function fetchFollowCount() {
+      const token = localStorage.getItem('twitch_token');
+      if (!token) return;
+      const headers = {
+        'Client-ID': CLIENT_ID,
+        'Authorization': `Bearer ${token}`
+      };
+      // a) Récupère l'user_id
+      const u = await fetch('https://api.twitch.tv/helix/users', { headers })
+                    .then(r=>r.json());
+      const userId = u.data[0].id;
+      // b) Récupère le total de follows
+      const f = await fetch(
+        `https://api.twitch.tv/helix/users/follows?to_id=${userId}&first=1`,
+        { headers }
+      ).then(r=>r.json());
+      followCount = f.total || 0;
+      // détermine phase de départ
+      for (let i=0; i<MILESTONES.length; i++) {
+        if (followCount < MILESTONES[i]) {
+          phaseIndex = i;
+          break;
+        }
+      }
+      showOverlay();
+      updateProgress();
+    }
+
+    // === INITIALISATION ===
+    (()=>{
+      if (!localStorage.getItem('twitch_token')) {
+        showLogin();
+      } else {
+        showOverlay();
+        fetchFollowCount();
+        setInterval(fetchFollowCount, 10000);
+      }
+    })();
+  </script>
+</body>
+</html>
