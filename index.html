@@ -59,7 +59,20 @@
     <button id="btnLogin">Se connecter à Twitch</button>
   </div>
 
-  <!-- 2) Anneau de progression -->
+  <!-- 2) Configuration manuelle -->
+  <div id="manual-config" style="display:none;">
+    <div style="text-align:center; font-family:sans-serif; background:white; padding:20px; border-radius:10px;">
+      <h3>Configuration du nombre de followers</h3>
+      <p>Twitch a supprimé l'API pour récupérer automatiquement le nombre de followers.</p>
+      <p>Entrez votre nombre actuel de followers :</p>
+      <input type="number" id="follower-input" placeholder="Nombre de followers" style="padding:10px; margin:10px; font-size:16px;">
+      <br>
+      <button id="save-followers" style="padding:10px 20px; font-size:16px; margin:5px;">Sauvegarder</button>
+      <button id="test-display" style="padding:10px 20px; font-size:16px; margin:5px; background:orange; color:white;">Test avec 1 follower</button>
+    </div>
+  </div>
+
+  <!-- 3) Anneau de progression -->
   <div id="progress-container">
     <svg id="progress-ring" viewBox="0 0 120 120">
       <defs>
@@ -81,7 +94,7 @@
     // === CONFIG & OAuth ===
     const CLIENT_ID    = 'trn5ak33y0crkdry0jza9h31vxdgp4';  // ← remplace par ton Client ID
     const REDIRECT_URI = location.origin + location.pathname;
-    const SCOPES       = 'user:read:email'; // pas de scope follow count nécessaire
+    const SCOPES       = 'moderator:read:followers'; // scope pour lire les followers
 
     // 1) Gérer le fragment #access_token
     if (location.hash.includes('access_token')) {
@@ -94,25 +107,51 @@
     const btnLogin   = document.getElementById('btnLogin');
     const divLogin   = document.getElementById('login');
     const divOverlay = document.getElementById('progress-container');
+    const divManualConfig = document.getElementById('manual-config');
 
     function showLogin() {
       divLogin.style.display   = 'block';
       divOverlay.style.display = 'none';
+      divManualConfig.style.display = 'none';
       btnLogin.onclick = () => {
-        const url = new URL('https://id.twitch.tv/oauth2/authorize');
-        url.search = new URLSearchParams({
-          client_id: CLIENT_ID,
-          redirect_uri: REDIRECT_URI,
-          response_type: 'token',
-          scope: SCOPES
-        });
-        location = url.toString();
+        showManualConfig(); // Aller directement à la config manuelle
+      };
+    }
+
+    function showManualConfig() {
+      divLogin.style.display   = 'none';
+      divOverlay.style.display = 'none';
+      divManualConfig.style.display = 'block';
+      
+      // Gérer la sauvegarde des followers
+      document.getElementById('save-followers').onclick = () => {
+        const input = document.getElementById('follower-input');
+        const count = parseInt(input.value) || 0;
+        localStorage.setItem('manual_followers', count);
+        followCount = count;
+        
+        // Déterminer la phase de départ
+        for (let i=0; i<MILESTONES.length; i++) {
+          if (followCount < MILESTONES[i]) {
+            phaseIndex = i;
+            break;
+          }
+        }
+        
+        showOverlay();
+        updateProgress();
+      };
+      
+      // Gérer le bouton de test
+      document.getElementById('test-display').onclick = () => {
+        testDisplay();
       };
     }
 
     function showOverlay() {
       divLogin.style.display   = 'none';
       divOverlay.style.display = 'flex';
+      divManualConfig.style.display = 'none';
     }
 
     // === LOGIQUE DU RING ===
@@ -147,43 +186,101 @@
       }
     }
 
-    // === FETCH DES DONNÉES TWITCH ===
-    async function fetchFollowCount() {
-      const token = localStorage.getItem('twitch_token');
-      if (!token) return;
-      const headers = {
-        'Client-ID': CLIENT_ID,
-        'Authorization': `Bearer ${token}`
-      };
-      // a) Récupère l'user_id
-      const u = await fetch('https://api.twitch.tv/helix/users', { headers })
-                    .then(r=>r.json());
-      const userId = u.data[0].id;
-      // b) Récupère le total de follows
-      const f = await fetch(
-        `https://api.twitch.tv/helix/users/follows?to_id=${userId}&first=1`,
-        { headers }
-      ).then(r=>r.json());
-      followCount = f.total || 0;
-      // détermine phase de départ
-      for (let i=0; i<MILESTONES.length; i++) {
-        if (followCount < MILESTONES[i]) {
-          phaseIndex = i;
-          break;
-        }
-      }
+    // === FONCTION DE TEST ===
+    function testDisplay() {
+      console.log('Test d\'affichage avec des données factices');
+      followCount = 1; // Simule 1 follower
+      phaseIndex = 0;
       showOverlay();
       updateProgress();
     }
 
+    // === FETCH DES DONNÉES TWITCH ===
+    async function fetchFollowCount() {
+      const token = localStorage.getItem('twitch_token');
+      if (!token) {
+        console.log('Pas de token trouvé');
+        return;
+      }
+      
+      try {
+        const headers = {
+          'Client-ID': CLIENT_ID,
+          'Authorization': `Bearer ${token}`
+        };
+        
+        console.log('Début de la récupération des données...');
+        
+        // a) Récupère l'user_id
+        const userResponse = await fetch('https://api.twitch.tv/helix/users', { headers });
+        if (!userResponse.ok) {
+          throw new Error(`Erreur utilisateur: ${userResponse.status}`);
+        }
+        const userData = await userResponse.json();
+        const userId = userData.data[0].id;
+        const username = userData.data[0].display_name;
+        
+        console.log(`Utilisateur: ${username} (ID: ${userId})`);
+        
+        // b) Récupère le nombre d'abonnés (followers)
+        const followersResponse = await fetch(
+          `https://api.twitch.tv/helix/channels/followers?broadcaster_id=${userId}`,
+          { headers }
+        );
+        
+        if (!followersResponse.ok) {
+          const errorText = await followersResponse.text();
+          console.error(`Erreur followers: ${followersResponse.status} - ${errorText}`);
+          throw new Error(`Erreur followers: ${followersResponse.status}`);
+        }
+        
+        const followersData = await followersResponse.json();
+        followCount = followersData.total || 0;
+        
+        console.log(`Nombre d'abonnés récupéré: ${followCount}`);
+        console.log('Données followers complètes:', followersData);
+        
+        // détermine phase de départ
+        for (let i=0; i<MILESTONES.length; i++) {
+          if (followCount < MILESTONES[i]) {
+            phaseIndex = i;
+            break;
+          }
+        }
+        
+        // Force l'affichage même si followCount = 0
+        updateProgress();
+        
+      } catch (error) {
+        console.error('Erreur lors de la récupération des données:', error);
+        // Afficher un message d'erreur à l'utilisateur
+        countEl.textContent = `Erreur: ${error.message}`;
+      }
+    }
+
     // === INITIALISATION ===
     (()=>{
-      if (!localStorage.getItem('twitch_token')) {
-        showLogin();
-      } else {
+      console.log('Initialisation...');
+      
+      // Vérifier s'il y a un nombre de followers sauvegardé
+      const savedFollowers = localStorage.getItem('manual_followers');
+      if (savedFollowers) {
+        followCount = parseInt(savedFollowers);
+        console.log('Followers sauvegardés trouvés:', followCount);
+        
+        // Déterminer la phase de départ
+        for (let i=0; i<MILESTONES.length; i++) {
+          if (followCount < MILESTONES[i]) {
+            phaseIndex = i;
+            break;
+          }
+        }
+        
         showOverlay();
-        fetchFollowCount();
-        setInterval(fetchFollowCount, 10000);
+        updateProgress();
+      } else {
+        console.log('Pas de followers sauvegardés, affichage du login');
+        showLogin();
       }
     })();
   </script>
