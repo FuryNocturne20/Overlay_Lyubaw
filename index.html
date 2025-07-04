@@ -54,21 +54,15 @@
 </head>
 <body>
 
-  <!-- 1) Bouton de login -->
-  <div id="login">
-    <button id="btnLogin">Se connecter à Twitch</button>
-  </div>
-
-  <!-- 2) Configuration manuelle -->
-  <div id="manual-config" style="display:none;">
-    <div style="text-align:center; font-family:sans-serif; background:white; padding:20px; border-radius:10px;">
+  <!-- 1) Configuration manuelle -->
+  <div id="manual-config">
+    <div style="text-align:center; font-family:sans-serif; background:white; padding:20px; border-radius:10px; max-width:400px; margin:0 auto;">
       <h3>Configuration du nombre de followers</h3>
-      <p>Twitch a supprimé l'API pour récupérer automatiquement le nombre de followers.</p>
       <p>Entrez votre nombre actuel de followers :</p>
-      <input type="number" id="follower-input" placeholder="Nombre de followers" style="padding:10px; margin:10px; font-size:16px;">
+      <input type="number" id="follower-input" placeholder="Nombre de followers" style="padding:10px; margin:10px; font-size:16px; width:200px;">
       <br>
-      <button id="save-followers" style="padding:10px 20px; font-size:16px; margin:5px;">Sauvegarder</button>
-      <button id="test-display" style="padding:10px 20px; font-size:16px; margin:5px; background:orange; color:white;">Test avec 1 follower</button>
+      <button id="save-followers" style="padding:10px 20px; font-size:16px; margin:5px; background:#9146ff; color:white; border:none; border-radius:5px; cursor:pointer;">Valider</button>
+      <button id="test-display" style="padding:10px 20px; font-size:16px; margin:5px; background:orange; color:white; border:none; border-radius:5px; cursor:pointer;">Test avec 1 follower</button>
     </div>
   </div>
 
@@ -91,17 +85,106 @@
   </div>
 
   <script>
-    // === CONFIG & OAuth ===
-    const CLIENT_ID    = 'trn5ak33y0crkdry0jza9h31vxdgp4';  // ← remplace par ton Client ID
-    const REDIRECT_URI = location.origin + location.pathname;
-    const SCOPES       = 'moderator:read:followers'; // scope pour lire les followers
+    // === LOGIQUE DU RING ===
+    const MILESTONES = [10, 25, 50, 100, 250, 500]; // Supprimé le 0 qui causait le bug
+    let followCount = 0, phaseIndex = 0, pausing = false;
+    const ring = document.querySelector('.ring-progress');
+    const pctEl = document.getElementById('progress-percentage');
+    const countEl = document.getElementById('follow-count');
+    const RADIUS = 54;
+    const CIRC   = 2 * Math.PI * RADIUS;
+    ring.style.strokeDasharray  = CIRC;
+    ring.style.strokeDashoffset = CIRC;
 
-    // 1) Gérer le fragment #access_token
-    if (location.hash.includes('access_token')) {
-      const params = new URLSearchParams(location.hash.slice(1));
-      localStorage.setItem('twitch_token', params.get('access_token'));
-      history.replaceState(null,'',REDIRECT_URI);
+    function updateProgress() {
+      const target = MILESTONES[phaseIndex];
+      const lower  = phaseIndex>0 ? MILESTONES[phaseIndex-1] : 0;
+      const rawPct = target > lower ? (followCount - lower) / (target - lower) : 0;
+      const pct = Math.min(Math.max(rawPct,0),1);
+      ring.style.strokeDashoffset = CIRC * (1 - pct);
+      pctEl.textContent   = `${Math.floor(rawPct*100)}%`;
+      countEl.textContent = `${followCount.toLocaleString()} / ${target.toLocaleString()} follows`;
+
+      if (followCount >= target
+          && phaseIndex < MILESTONES.length-1
+          && !pausing) {
+        pausing = true;
+        setTimeout(()=>{
+          phaseIndex++;
+          pausing = false;
+          updateProgress();
+        }, 3000);
+      }
     }
+
+    // === FONCTION DE TEST ===
+    function testDisplay() {
+      console.log('Test d\'affichage avec des données factices');
+      followCount = 1; // Simule 1 follower
+      phaseIndex = 0;
+      showOverlay();
+      updateProgress();
+    }
+
+    function showManualConfig() {
+      document.getElementById('manual-config').style.display = 'block';
+      document.getElementById('progress-container').style.display = 'none';
+    }
+
+    function showOverlay() {
+      document.getElementById('manual-config').style.display = 'none';
+      document.getElementById('progress-container').style.display = 'flex';
+    }
+
+    // === INITIALISATION ===
+    (()=>{
+      console.log('Initialisation...');
+      
+      // Vérifier s'il y a un nombre de followers sauvegardé
+      const savedFollowers = localStorage.getItem('manual_followers');
+      if (savedFollowers) {
+        followCount = parseInt(savedFollowers);
+        console.log('Followers sauvegardés trouvés:', followCount);
+        
+        // Déterminer la phase de départ
+        for (let i=0; i<MILESTONES.length; i++) {
+          if (followCount < MILESTONES[i]) {
+            phaseIndex = i;
+            break;
+          }
+        }
+        
+        showOverlay();
+        updateProgress();
+      } else {
+        console.log('Pas de followers sauvegardés, affichage de la config');
+        showManualConfig();
+      }
+      
+      // Gérer la sauvegarde des followers
+      document.getElementById('save-followers').onclick = () => {
+        const input = document.getElementById('follower-input');
+        const count = parseInt(input.value) || 0;
+        localStorage.setItem('manual_followers', count);
+        followCount = count;
+        
+        // Déterminer la phase de départ
+        for (let i=0; i<MILESTONES.length; i++) {
+          if (followCount < MILESTONES[i]) {
+            phaseIndex = i;
+            break;
+          }
+        }
+        
+        showOverlay();
+        updateProgress();
+      };
+      
+      // Gérer le bouton de test
+      document.getElementById('test-display').onclick = () => {
+        testDisplay();
+      };
+    })();
 
     // 2) Affichage du login ou de l’overlay
     const btnLogin   = document.getElementById('btnLogin');
@@ -155,7 +238,7 @@
     }
 
     // === LOGIQUE DU RING ===
-    const MILESTONES = [0, 10, 25, 50, 100, 250, 500];
+    const MILESTONES = [10, 25, 50, 100, 250, 500]; // Supprimé le 0 qui causait le bug
     let followCount = 0, phaseIndex = 0, pausing = false;
     const ring = document.querySelector('.ring-progress');
     const pctEl = document.getElementById('progress-percentage');
@@ -168,7 +251,7 @@
     function updateProgress() {
       const target = MILESTONES[phaseIndex];
       const lower  = phaseIndex>0 ? MILESTONES[phaseIndex-1] : 0;
-      const rawPct = (followCount - lower) / (target - lower);
+      const rawPct = target > lower ? (followCount - lower) / (target - lower) : 0;
       const pct = Math.min(Math.max(rawPct,0),1);
       ring.style.strokeDashoffset = CIRC * (1 - pct);
       pctEl.textContent   = `${Math.floor(rawPct*100)}%`;
